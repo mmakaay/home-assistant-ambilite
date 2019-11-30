@@ -1,0 +1,52 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import time
+import paho.mqtt.client as mqtt
+import paho.mqtt.publish as publish
+
+MQTT_SERVER = "172.17.206.1"
+MQTT_USERNAME = "hass"
+MQTT_PASSWORD = "burgers"
+STATE_FILE = "/var/run/ambilite.active"
+
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        client.connected_flag = True
+        print("Connected to MQTT broker")
+
+
+def on_message(client, userdata, message):
+    on_or_off = str(message.payload.decode("utf-8"))
+    print("Incoming message: %s" % on_or_off)
+    try:
+        if on_or_off == 'ON':
+            fh = open(STATE_FILE, "w")
+            fh.write("Ambilite turned on at %f" % time.time())
+            fh.close()
+            print("Ambilite turned on")
+        else:
+            os.unlink(STATE_FILE)
+            print("Ambilite turned off")
+    except Exception as e:
+        print("Failed to set ambilite state: %s" % str(e)) 
+
+    try:
+        publish.single(
+            "homeassistant/switch/ambilite/state", on_or_off,
+            hostname=MQTT_SERVER,
+            auth = {"username": MQTT_USERNAME, "password": MQTT_PASSWORD})
+    except Exception as e:
+        print("Failed to send state=%s update: %s" % (on_or_off, str(e))) 
+
+
+client = mqtt.Client("ambilite-mediacontroller")
+client.username_pw_set(username=MQTT_USERNAME, password=MQTT_PASSWORD)
+client.connected_flag = False
+client.on_connect = on_connect
+client.on_message = on_message
+
+client.connect(MQTT_SERVER)
+client.subscribe("homeassistant/switch/ambilite/set", qos=0)
+client.loop_forever()

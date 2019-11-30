@@ -1,0 +1,137 @@
+#!/usr/bin/env python
+
+import json
+import os
+import os.path
+import sys
+import time
+import paho.mqtt.client as mqtt
+import paho.mqtt.publish as publish
+
+config = {
+    "version": "1.0.0",
+    "broker": "172.17.206.1",
+    "username": "hass",
+    "password": "burgers",
+    "state_file": "/var/run/ambilite.active",
+    "base_topic": "homeassistant/switch/ambilite",
+    "unique_id": "ambilite-mediacontroller",
+    "name": "ambilite",
+}
+
+state = {
+    "enabled": os.path.exists(config["state_file"]),
+    "color": { "r": 100, "g": 100, "b": 100, "x": 0.5, "y": 0.5 }
+}
+
+
+# ----------------------------------------------------------------------
+# MQTT publishing
+# ----------------------------------------------------------------------
+
+def send_discovery_config(config):
+    """Unregister and reregister with Home Assistant, to get a fresh
+       autodiscovery configuration in there."""
+    send_payload("config", "", config)
+    send_payload("config", json.dumps({
+        "unique_id": config["unique_id"],
+        "name": config["name"],
+        "state_topic": "%s/state" % config["base_topic"],
+        "command_topic": "%s/set" % config["base_topic"],
+        "json_attributes_topic": "%s/attributes" % config["base_topic"],
+        "optimistic": "false",
+        "retain": "true",
+        "icon": "mdi:shape-rectangle-plus",
+        "device": {
+            "identifiers": [config["unique_id"]],
+            "manufacturer": "Maurice Makaay",
+            "model": "Raspberry Ambilite",
+            "sw_version": config["version"],
+            "name": "Ambilite"
+        }
+    }), config)
+
+def send_attributes(state, config):
+    send_payload("attributes", json.dumps(state.color), config)
+
+def send_state(state, config):
+    send_payload("state", "ON" if state["enabled"] else "OFF", config)
+ 
+def send_payload(topic, payload, config):
+    print("Publish: %s/%s: %s" % (config["base_topic"], topic, payload))
+    publish.single(
+        "%s/%s" % (config["base_topic"], topic), payload,
+        hostname=config["broker"],
+        auth = {
+            "username": config["username"],
+            "password": config["password"]
+        })
+
+
+# ----------------------------------------------------------------------
+# MQTT subscription
+# ----------------------------------------------------------------------
+
+def start_subscription_loop(state, config): 
+    """Create an MQTT subscriber to handle incoming messages and
+       start a listen loop in a separate thread to handle these
+       messages."""
+    client = mqtt.Client(config["unique_id"])
+    client.config = config
+    client.state = state
+    client.username_pw_set(
+        username=config["username"],
+        password=config["password"])
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.on_message = on_message
+    client.connect(config["broker"])
+    client.subscribe("%s/set" % config["base_topic"], qos=0)
+    client.loop_start()
+
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("Subscriber: Connected to broker")
+    else:
+        print("Subscriber: Connecting to broker failed (rc = %d)" % rc)
+
+def on_disconnect(client, userdata, rc):
+    if rc == 0:
+        print("Subscriber: Disconnected from broker")
+    else:
+        print("Subscriber: Unexpected disconnected from broker (rc = %d)" % rc)
+
+def on_message(client, userdata, message):
+    print("Subscriber: Incoming message: %s" % message.topic)
+    on_or_off = str(message.payload.decode("utf-8"))
+    try:
+        if on_or_off == 'ON':
+            client.state["enabled"] = True
+            fh = open(client.config["state_file"], "w")
+            fh.write("Ambilite turned on at %f" % time.time())
+            fh.close()
+            print("Subscriber: Ambilite turned on")
+        else:
+            client.state["enabled"] = False
+            os.unlink(client.config["state_file"])
+            print("Subscriber: Ambilite turned off")
+        send_state(client.state, client.config)
+    except Exception as e:
+        print("Subscriber: Failed to set ambilite state: %s" % str(e)) 
+
+
+# ----------------------------------------------------------------------
+# MQTT subscription
+# ----------------------------------------------------------------------
+
+def start_publish_loop(state, config):
+    pass
+
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
+
+send_discovery_config(config)
+start_subscription_loop(state, config)
+start_publish_loop(state, config)
+

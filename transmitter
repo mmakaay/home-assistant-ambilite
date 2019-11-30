@@ -1,0 +1,172 @@
+#!/usr/bin/env python
+
+#from PIL import Image
+#import cv2
+import numpy as np
+import numexpr as ne
+import picamera
+import picamera.array
+import os
+import json
+import paho.mqtt.publish as publish
+import rgbxy
+
+MQTT_SERVER = "172.17.206.1"
+MQTT_USERNAME = "hass"
+MQTT_PASSWORD = "burgers"
+STATE_FILE = "/var/run/ambilite.active"
+
+def handle_itv_led(cam):
+        cam.zoom = (0.50, 0.58, 0.10, 0.10)
+        cam.resolution = (720, 480)
+        cam.awb_mode = 'fluorescent'
+        cam.meter_mode = 'average'
+        cam.saturation = 100
+        cam.contrast = 100
+
+        with picamera.array.PiRGBArray(cam) as store:
+            cam.capture(store, format="bgr")
+            img = store.array
+            #cv2.imwrite('/var/www/html/still_itv_ps4.swap.jpg', img)
+            #os.rename('/var/www/html/still_itv_ps4.swap.jpg', '/var/www/html/still_itv_ps4.jpg')
+
+def handle_ambilite(cam):
+        if not os.path.exists(STATE_FILE):
+            return
+
+        cam.zoom = (0.48, 0.20, 0.305, 0.255)
+        cam.resolution = (720, 480)
+        cam.awb_mode = 'fluorescent'
+        cam.meter_mode = 'backlit'
+        cam.saturation = 0
+        cam.contrast = 0
+ 
+        with picamera.array.PiRGBArray(cam) as store:
+            cam.capture(store, format="bgr")  
+            img = store.array
+
+            #cv2.imwrite('/var/www/html/still_tv.swap.jpg', img)
+            #os.rename('/var/www/html/still_tv.swap.jpg', '/var/www/html/still_tv.jpg')
+            img = img[:, :, ::-1]
+            dominant_color = get_dominant_color(img)
+
+	#file = open('/var/www/html/index.html', 'w')
+        #color_style = "rgb(%d,%d,%d)" % dominant_color
+        #file.write("<!DOCTYPE HTML>\n")
+        #file.write("<body style=\"background-color: %s\">" % color_style)
+        #file.write("<img style=\"float:left\" src=\"still_tv.jpg\">\n")
+        #file.write("<img style=\"float:left\" src=\"still_itv_ps4.jpg\">\n")
+        #file.write("</body>")
+        #file.close()
+
+	#colors = {
+	#    "left": dominant_color,
+	#    "right": dominant_color,
+	#    "top": dominant_color,
+	#}
+
+	#file = open('/var/www/html/still_tv_colors.swap.json', 'w')
+	#file.write(json.dumps(colors))
+	#file.close()
+	#os.rename(
+	#    '/var/www/html/still_tv_colors.swap.json',
+	#    '/var/www/html/still_tv_colors.json')
+	#print(repr(colors))
+
+	send_to_mqtt(dominant_color)
+
+        print("SENT: RGB %d, %d, %d" % dominant_color)
+
+color = rgbxy.Converter(rgbxy.GamutB)
+
+def send_to_mqtt(dominant_color):
+    global color
+    xy = color.rgb_to_xy(*dominant_color)
+    publish.single(
+        "homeassistant/switch/ambilite/attributes", json.dumps({
+             "r": dominant_color[0],
+             "g": dominant_color[1],
+             "b": dominant_color[2],
+             "x": xy[0],
+             "y": xy[1]
+         }),
+        hostname=MQTT_SERVER,
+        auth = {"username": MQTT_USERNAME, "password": MQTT_PASSWORD})
+
+
+def get_dominant_color(img):
+    SAMPLE_STEP = 20
+    POSTERIZE = 25
+    LOW = 50
+    HIGH = 220
+
+    # To save time in the following steps, take a sample of the
+    # total amount of items. For our case (determining the dominant
+    # color for an ambilight-like setup, this is good enough).
+    downsampled = img[0::SAMPLE_STEP, 0::SAMPLE_STEP]
+
+    # Create a copy to reduce colors further, so we can later on
+    # come back to the downsampled image.
+    reduced = downsampled.copy()
+
+    # Pull all items that are too dark or too light to (0, 0, 0).
+    #extremes = (reduced < LOW) & (reduced > HIGH)
+    #extremes = 0
+    reduced[np.all(reduced < LOW, axis=-1)] = 0
+    reduced[np.all(reduced > HIGH, axis=-1)] = 0
+
+    # Reduce the number of colors in the image, by grouping them
+    # in bins. When we have a lot of slightly different colors in the image,
+    # this will group those colors into a single group, making all of the
+    # colors count for finding a good dominant color.
+    reduced = reduced // POSTERIZE * POSTERIZE
+
+    # Pull all items that are now too dark or too light to (0, 0, 0).
+    reduced[np.all(reduced < LOW, axis=-1)] = 0
+    reduced[np.all(reduced > HIGH, axis=-1)] = 0
+
+    # Find the dominant color bin that is not (0, 0, 0)..
+    # For this, first convert the x, y, (r, g, b) dimensions into a
+    # list of (r, g, b) items.
+    flat = reduced.reshape(-1, 3)
+
+    # Filter out the items that are (0, 0, 0).
+    flat = flat[np.all(flat != (0, 0, 0), -1)]
+
+    # No items left?
+    if not len(flat):
+        return (0, 0, 0)
+
+    # Convert the (r, g, b) values into a single integer value.
+    col_range = (256, 256, 256)
+    eval_params = {
+        'R': flat[:,0],
+        'G': flat[:,1],
+        'B': flat[:,2],
+        'Rmax': col_range[0],
+        'Gmax': col_range[1]
+    }
+    rgb_values = ne.evaluate('R*Rmax*Gmax + G*Gmax + B', eval_params)
+
+    # Find the dominant RGB integer value.
+    dominant = np.bincount(rgb_values).argmax()
+
+    # Reverse engineer this value into an (r, g, b) array.
+    bin_rgb = np.unravel_index(dominant, col_range)
+
+    # Find the original image colors that fall in this bin.
+    use = downsampled[np.all(reduced == bin_rgb, 2)]
+
+    # Compute the average color from the original colors.
+    average_rgb = tuple(int(d) for d in np.average(use, 0))
+
+    return average_rgb
+
+
+with picamera.PiCamera() as cam:
+    while True:
+        try:
+            handle_ambilite(cam)
+            #handle_itv_led(cam)
+        except Exception as e:
+            print("Unhandled exception: %s" % str(e))
