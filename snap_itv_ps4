@@ -1,0 +1,13 @@
+#!/bin/bash
+
+raspistill \
+        -w 720 \
+        -h 480 \
+	-e jpg \
+	-o /var/www/html/still_itv_ps4.jpg \
+	-t 500 \
+	--awb fluorescent \
+	--metering average \
+	--saturation 100 \
+	--contrast 100 \
+        --roi 0.50,0.58,0.10,0.10

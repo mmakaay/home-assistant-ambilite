@@ -1,0 +1,9 @@
+raspistill \
+        -w 720 \
+        -h 480 \
+	-e jpg \
+	-o /var/www/html/still_tv.jpg \
+	-t 800 \
+	--awb fluorescent \
+	--metering backlit \
+        --roi 0.48,0.20,0.305,0.255
