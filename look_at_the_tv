@@ -1,29 +1,11 @@
 #!/usr/bin/env python
 
 import json
-import os
 import os.path
 import sys
 import time
 import paho.mqtt.client as mqtt
 import paho.mqtt.publish as publish
-
-config = {
-    "version": "1.0.0",
-    "broker": "172.17.206.1",
-    "username": "hass",
-    "password": "burgers",
-    "state_file": "/var/run/ambilite.active",
-    "base_topic": "homeassistant/switch/ambilite",
-    "unique_id": "ambilite-mediacontroller",
-    "name": "ambilite",
-}
-
-state = {
-    "enabled": os.path.exists(config["state_file"]),
-    "color": { "r": 100, "g": 100, "b": 100, "x": 0.5, "y": 0.5 }
-}
-
 
 # ----------------------------------------------------------------------
 # MQTT publishing
@@ -52,13 +34,13 @@ def send_discovery_config(config):
     }), config)
 
 def send_attributes(state, config):
-    send_payload("attributes", json.dumps(state.color), config)
+    send_payload("attributes", json.dumps(state["color"]), config)
 
 def send_state(state, config):
     send_payload("state", "ON" if state["enabled"] else "OFF", config)
  
 def send_payload(topic, payload, config):
-    print("Publish: %s/%s: %s" % (config["base_topic"], topic, payload))
+    print("Publish: %s: %s" % (topic, payload))
     publish.single(
         "%s/%s" % (config["base_topic"], topic), payload,
         hostname=config["broker"],
@@ -124,12 +106,194 @@ def on_message(client, userdata, message):
 # MQTT subscription
 # ----------------------------------------------------------------------
 
+import numpy as np
+import numexpr as ne
+import picamera
+import picamera.array
+import rgbxy
+
 def start_publish_loop(state, config):
-    pass
+    config["color_converter"] = rgbxy.Converter(rgbxy.GamutB)
+    with picamera.PiCamera() as cam:
+        while True:
+            if not state["enabled"]:
+                print("Publish: No action, ambilite is disabled")
+                time.sleep(1)
+                continue
+            try:
+                handle_ambilite(cam, config)
+                #handle_itv_led(cam)
+            except Exception as e:
+                print("Publish: Unhandled exception: %s" % str(e))
+
+
+def handle_itv_led(state, config):
+    cam.zoom = (0.50, 0.58, 0.10, 0.10)
+    cam.resolution = (720, 480)
+    cam.awb_mode = 'fluorescent'
+    cam.meter_mode = 'average'
+    cam.saturation = 100
+    cam.contrast = 100
+
+    with picamera.array.PiRGBArray(cam) as store:
+        cam.capture(store, format="bgr")
+        img = store.array
+        #cv2.imwrite('/var/www/html/still_itv_ps4.swap.jpg', img)
+        #os.rename('/var/www/html/still_itv_ps4.swap.jpg', '/var/www/html/still_itv_ps4.jpg')
+
+def handle_ambilite(cam, config):
+    """Take a shot of the tv screen, compute the dominant color and
+       pushlish the color to Home Assistant."""
+    cam.zoom = (0.48, 0.20, 0.305, 0.255)
+    cam.resolution = (720, 480)
+    cam.awb_mode = 'fluorescent'
+    cam.meter_mode = 'backlit'
+    cam.saturation = 0
+    cam.contrast = 0
+
+    with picamera.array.PiRGBArray(cam) as store:
+        cam.capture(store, format="bgr")  
+        img = store.array
+
+        #cv2.imwrite('/var/www/html/still_tv.swap.jpg', img)
+        #os.rename('/var/www/html/still_tv.swap.jpg', '/var/www/html/still_tv.jpg')
+        img = img[:, :, ::-1]
+        dominant_color = get_dominant_color(img)
+
+    #file = open('/var/www/html/index.html', 'w')
+    #color_style = "rgb(%d,%d,%d)" % dominant_color
+    #file.write("<!DOCTYPE HTML>\n")
+    #file.write("<body style=\"background-color: %s\">" % color_style)
+    #file.write("<img style=\"float:left\" src=\"still_tv.jpg\">\n")
+    #file.write("<img style=\"float:left\" src=\"still_itv_ps4.jpg\">\n")
+    #file.write("</body>")
+    #file.close()
+
+    #colors = {
+    #    "left": dominant_color,
+    #    "right": dominant_color,
+    #    "top": dominant_color,
+    #}
+
+    #file = open('/var/www/html/still_tv_colors.swap.json', 'w')
+    #file.write(json.dumps(colors))
+    #file.close()
+    #os.rename(
+    #    '/var/www/html/still_tv_colors.swap.json',
+    #    '/var/www/html/still_tv_colors.json')
+    #print(repr(colors))
+
+    set_color_in_state(dominant_color, config, state)
+    send_attributes(state, config)
+
+def get_dominant_color(img):
+    SAMPLE_STEP = 40
+    POSTERIZE = 25
+    LOW = 50
+    HIGH = 220
+    TOP_SCREEN_CUTOFF = 0.6
+
+    # To save time in the following steps, take a sample of the
+    # total amount of items. For our case (determining the dominant
+    # color for an ambilight-like setup, this is good enough).
+    #
+    # The bottom of the screen normally is not that interesting for
+    # the single color ambilight setup that I'm going for, so
+    # that's why I go for a top section only here.
+    height = int(img.shape[0] * TOP_SCREEN_CUTOFF)
+    downsampled = img[0:height:SAMPLE_STEP, 0::SAMPLE_STEP]
+
+    # Create a copy to reduce colors further, so we can later on
+    # come back to the downsampled image.
+    reduced = downsampled.copy()
+
+    # Pull all items that are too dark or too light to (0, 0, 0).
+    #extremes = (reduced < LOW) & (reduced > HIGH)
+    #extremes = 0
+    reduced[np.all(reduced < LOW, axis=-1)] = 0
+    reduced[np.all(reduced > HIGH, axis=-1)] = 0
+
+    # Reduce the number of colors in the image, by grouping them
+    # in bins. When we have a lot of slightly different colors in the image,
+    # this will group those colors into a single group, making all of the
+    # colors count for finding a good dominant color.
+    reduced = reduced // POSTERIZE * POSTERIZE
+
+    # Pull all items that are now too dark or too light to (0, 0, 0).
+    reduced[np.all(reduced < LOW, axis=-1)] = 0
+    reduced[np.all(reduced > HIGH, axis=-1)] = 0
+
+    # Find the dominant color bin that is not (0, 0, 0)..
+    # For this, first convert the x, y, (r, g, b) dimensions into a
+    # list of (r, g, b) items.
+    flat = reduced.reshape(-1, 3)
+
+    # Filter out the items that are (0, 0, 0).
+    flat = flat[np.all(flat != (0, 0, 0), -1)]
+
+    # No items left?
+    if not len(flat):
+        return (0, 0, 0)
+
+    # Convert the (r, g, b) values into a single integer value.
+    col_range = (256, 256, 256)
+    eval_params = {
+        'R': flat[:,0],
+        'G': flat[:,1],
+        'B': flat[:,2],
+        'Rmax': col_range[0],
+        'Gmax': col_range[1]
+    }
+    rgb_values = ne.evaluate('R*Rmax*Gmax + G*Gmax + B', eval_params)
+
+    # Find the dominant RGB integer value.
+    dominant = np.bincount(rgb_values).argmax()
+
+    # Reverse engineer this value into an (r, g, b) array.
+    bin_rgb = np.unravel_index(dominant, col_range)
+
+    # Find the original image colors that fall in this bin.
+    use = downsampled[np.all(reduced == bin_rgb, 2)]
+
+    # Compute the average color from the original colors.
+    average_rgb = tuple(int(d) for d in np.average(use, 0))
+
+    return average_rgb
+
+def set_color_in_state(color, config, state):
+    xy = config["color_converter"].rgb_to_xy(*color)
+    state["color"] = {
+        "r": color[0],
+        "g": color[1],
+        "b": color[2],
+        "x": xy[0],
+        "y": xy[1]
+     }
+
 
 # ----------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------
+
+# I know, my home automation MQTT password  can be found in this file.
+# No worries. It's my dev host and it is not accessible from the internet.
+# This will be moved to a configuration file for the final version.
+
+config = {
+    "version": "1.0.0",
+    "broker": "172.17.206.1",
+    "username": "hass",
+    "password": "burgers",
+    "state_file": "/var/run/ambilite.active",
+    "base_topic": "homeassistant/switch/ambilite",
+    "unique_id": "ambilite-mediacontroller",
+    "name": "ambilite",
+}
+
+state = {
+    "enabled": os.path.exists(config["state_file"]),
+    "color": { "r": 100, "g": 100, "b": 100, "x": 0.5, "y": 0.5 }
+}
 
 send_discovery_config(config)
 start_subscription_loop(state, config)

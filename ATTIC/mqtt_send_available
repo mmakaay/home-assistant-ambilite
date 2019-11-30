@@ -1,0 +1,9 @@
+#!/bin/bash
+
+mosquitto_pub \
+    -h hass.home.makaay.nl -p 1883 \
+    -u hass -P burgers \
+    -i ambilite-mediacontroller \
+    -t homeassistant/switch/ambilite/available \
+    -m 'online'
+

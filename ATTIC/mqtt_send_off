@@ -1,0 +1,13 @@
+#!/bin/bash
+
+mosquitto_pub \
+    -h hass.home.makaay.nl -p 1883 \
+    -u hass -P burgers \
+    -t homeassistant/switch/ambilite/state \
+    -m 'OFF'
+
+mosquitto_pub \
+    -h hass.home.makaay.nl -p 1883 \
+    -u hass -P burgers \
+    -t homeassistant/switch/ambilite/attributes \
+    -m '{}'

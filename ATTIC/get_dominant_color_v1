@@ -1,0 +1,98 @@
+#!/usr/bin/env python
+
+import cv2
+import numpy as np
+import picamera
+import picamera.array
+import os
+import json
+
+WIDTH=50
+
+def capture_itv_led(cam):
+        cam.zoom = (0.50, 0.58, 0.10, 0.10)
+        cam.awb_mode = 'fluorescent'
+        cam.meter_mode = 'average'
+        cam.saturation = 100
+        cam.contrast = 100
+
+        rawCap=picamera.array.PiRGBArray(cam)
+        cam.capture(rawCap, format="bgr")  
+        img=rawCap.array
+
+        cv2.imwrite('/var/www/html/still_itv_ps4.swap.jpg', img)
+        os.rename('/var/www/html/still_itv_ps4.swap.jpg', '/var/www/html/still_itv_ps4.jpg')
+
+def capture_tv(cam):
+        cam.zoom = (0.48, 0.20, 0.305, 0.255)
+        cam.awb_mode = 'fluorescent'
+        cam.meter_mode = 'backlit'
+        cam.saturation = 0
+        cam.contrast = 0
+
+        rawCap=picamera.array.PiRGBArray(cam)
+        cam.capture(rawCap, format="bgr")  
+        img=rawCap.array
+
+        cv2.imwrite('/var/www/html/still_tv.swap.jpg', img)
+        os.rename('/var/www/html/still_tv.swap.jpg', '/var/www/html/still_tv.jpg')
+
+        left = img[:, 0:WIDTH, :]
+        right = img[:, -WIDTH:, :]
+        top = img[0:WIDTH]
+        colors = {
+            "left": (
+	        int(np.mean(left[:, :, 0])),
+		int(np.mean(left[:, :, 1])),
+		int(np.mean(left[:, :, 2]))
+            ),
+	    "right": (
+                int(np.mean(right[:, :, 0])),
+                int(np.mean(right[:, :, 1])),
+                int(np.mean(right[:, :, 2]))
+            ),
+	    "top": (
+                int(np.mean(top[:, :, 0])),
+                int(np.mean(top[:, :, 1])),
+                int(np.mean(top[:, :, 2]))
+            )
+        }
+
+        file = open('/var/www/html/still_tv_colors.swap.json', 'w')
+        file.write(json.dumps(colors))
+	file.close()
+        os.rename(
+            '/var/www/html/still_tv_colors.swap.json',
+            '/var/www/html/still_tv_colors.json')
+        print(repr(colors))
+
+    
+
+with picamera.PiCamera() as cam:
+    while True:
+        capture_tv(cam)
+        capture_itv_led(cam)
+      
+
+#import numpy as np
+#from skimage import io
+#from sklearn.cluster import KMeans
+
+#from PIL import Image
+
+#image = Image.open("/var/www/html/still_tv.jpg")
+
+#image = cv2.imread('/var/www/html/still_tv.jpg')
+
+#w, h = image.size
+#pixels = image.getcolors(w * h)
+#
+#most_frequent_pixel = pixels[0]
+#
+#for count, colour in pixels:
+#    if count > most_frequent_pixel[0]:
+#        most_frequent_pixel = (count, colour)
+#
+#compare("Most Common", image, most_frequent_pixel[1])
+#
+#print(repr(most_frequent_pixel))

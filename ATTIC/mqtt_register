@@ -1,0 +1,13 @@
+#!/bin/bash
+
+mosquitto_pub \
+    -h hass.home.makaay.nl -p 1883 \
+    -u hass -P burgers \
+    -t homeassistant/switch/ambilite/config \
+    -m ''
+
+mosquitto_pub \
+    -h hass.home.makaay.nl -p 1883 -r -q 2 \
+    -u hass -P burgers \
+    -t homeassistant/switch/ambilite/config \
+    -m '{"unique_id": "ambilite-mediacontroller", "name":"ambilite", "state_topic":"homeassistant/switch/ambilite/state", "command_topic":"homeassistant/switch/ambilite/set", "json_attributes_topic": "homeassistant/switch/ambilite/attributes", "optimistic": "false", "retain": "true", "icon": "mdi:shape-rectangle-plus", "device": {"identifiers": ["ambilite-mediacontroller"], "manufacturer": "Makaay inc.", "model": "Raspberry Ambilite", "sw_version": "0.0.1", "name": "Ambilite"}}'

@@ -1,0 +1,6 @@
+#!/bin/bash
+
+mosquitto_sub -v \
+    -h hass.home.makaay.nl -p 1883 \
+    -u hass -P burgers \
+    -t homeassistant/switch/ambilite/#
