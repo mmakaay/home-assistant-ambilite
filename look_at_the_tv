@@ -75,15 +75,17 @@ def start_subscription_loop(state, config):
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        verbose("Subscriber: Connected to broker")
+        print("Subscriber: Connected to broker")
+        send_discovery_config(client.config)
+        send_state(client.state, client.config)
     else:
-        verbose("Subscriber: Connecting to broker failed (rc = %d)" % rc)
+        print("Subscriber: Connecting to broker failed (rc = %d)" % rc)
 
 def on_disconnect(client, userdata, rc):
     if rc == 0:
-        verbose("Subscriber: Disconnected from broker")
+        print("Subscriber: Disconnected from broker")
     else:
-        verbose("Subscriber: Unexpected disconnected from broker (rc = %d)" % rc)
+        print("Subscriber: Unexpected disconnected from broker (rc = %d)" % rc)
 
 def on_message(client, userdata, message):
     verbose("Subscriber: Incoming message: %s" % message.topic)
@@ -94,11 +96,11 @@ def on_message(client, userdata, message):
             fh = open(client.config["state_file"], "w")
             fh.write("Ambilite turned on at %f" % time.time())
             fh.close()
-            verbose("Subscriber: Ambilite turned on")
+            print("Subscriber: Ambilite turned on")
         else:
             client.state["enabled"] = False
             os.unlink(client.config["state_file"])
-            verbose("Subscriber: Ambilite turned off")
+            print("Subscriber: Ambilite turned off")
         send_state(client.state, client.config)
     except Exception as e:
         print("Subscriber: Failed to set ambilite state: %s" % str(e)) 
@@ -311,7 +313,6 @@ else:
     def verbose(msg):
         pass
 
-send_discovery_config(config)
 start_subscription_loop(state, config)
 start_publish_loop(state, config)
 

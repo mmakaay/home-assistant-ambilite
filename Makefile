@@ -7,3 +7,7 @@ install:
 
 status:
 	systemctl status look_at_the_tv
+
+run:
+	systemctl stop look_at_the_tv
+	./look_at_the_tv -v
