@@ -6,6 +6,8 @@ import sys
 import time
 import paho.mqtt.client as mqtt
 import paho.mqtt.publish as publish
+from argparse import ArgumentParser
+
 
 # ----------------------------------------------------------------------
 # MQTT publishing
@@ -40,7 +42,7 @@ def send_state(state, config):
     send_payload("state", "ON" if state["enabled"] else "OFF", config)
  
 def send_payload(topic, payload, config):
-    print("Publish: %s: %s" % (topic, payload))
+    verbose("Publish: %s: %s" % (topic, payload))
     publish.single(
         "%s/%s" % (config["base_topic"], topic), payload,
         hostname=config["broker"],
@@ -73,18 +75,18 @@ def start_subscription_loop(state, config):
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        print("Subscriber: Connected to broker")
+        verbose("Subscriber: Connected to broker")
     else:
-        print("Subscriber: Connecting to broker failed (rc = %d)" % rc)
+        verbose("Subscriber: Connecting to broker failed (rc = %d)" % rc)
 
 def on_disconnect(client, userdata, rc):
     if rc == 0:
-        print("Subscriber: Disconnected from broker")
+        verbose("Subscriber: Disconnected from broker")
     else:
-        print("Subscriber: Unexpected disconnected from broker (rc = %d)" % rc)
+        verbose("Subscriber: Unexpected disconnected from broker (rc = %d)" % rc)
 
 def on_message(client, userdata, message):
-    print("Subscriber: Incoming message: %s" % message.topic)
+    verbose("Subscriber: Incoming message: %s" % message.topic)
     on_or_off = str(message.payload.decode("utf-8"))
     try:
         if on_or_off == 'ON':
@@ -92,11 +94,11 @@ def on_message(client, userdata, message):
             fh = open(client.config["state_file"], "w")
             fh.write("Ambilite turned on at %f" % time.time())
             fh.close()
-            print("Subscriber: Ambilite turned on")
+            verbose("Subscriber: Ambilite turned on")
         else:
             client.state["enabled"] = False
             os.unlink(client.config["state_file"])
-            print("Subscriber: Ambilite turned off")
+            verbose("Subscriber: Ambilite turned off")
         send_state(client.state, client.config)
     except Exception as e:
         print("Subscriber: Failed to set ambilite state: %s" % str(e)) 
@@ -117,19 +119,19 @@ def start_publish_loop(state, config):
     with picamera.PiCamera() as cam:
         while True:
             if not state["enabled"]:
-                print("Publish: No action, ambilite is disabled")
+                verbose("Publish: No action, ambilite is disabled")
                 time.sleep(1)
                 continue
             try:
                 handle_ambilite(cam, config)
                 #handle_itv_led(cam)
             except Exception as e:
-                print("Publish: Unhandled exception: %s" % str(e))
+                verbose("Publish: Unhandled exception: %s" % str(e))
 
 
 def handle_itv_led(state, config):
     cam.zoom = (0.50, 0.58, 0.10, 0.10)
-    cam.resolution = (720, 480)
+    cam.resolution = (736, 480)
     cam.awb_mode = 'fluorescent'
     cam.meter_mode = 'average'
     cam.saturation = 100
@@ -145,7 +147,7 @@ def handle_ambilite(cam, config):
     """Take a shot of the tv screen, compute the dominant color and
        pushlish the color to Home Assistant."""
     cam.zoom = (0.48, 0.20, 0.305, 0.255)
-    cam.resolution = (720, 480)
+    cam.resolution = (736, 480)
     cam.awb_mode = 'fluorescent'
     cam.meter_mode = 'backlit'
     cam.saturation = 0
@@ -187,11 +189,11 @@ def handle_ambilite(cam, config):
     send_attributes(state, config)
 
 def get_dominant_color(img):
-    SAMPLE_STEP = 40
+    SAMPLE_STEP = 15
     POSTERIZE = 25
     LOW = 50
     HIGH = 220
-    TOP_SCREEN_CUTOFF = 0.6
+    TOP_SCREEN_CUTOFF = 0.7
 
     # To save time in the following steps, take a sample of the
     # total amount of items. For our case (determining the dominant
@@ -294,6 +296,20 @@ state = {
     "enabled": os.path.exists(config["state_file"]),
     "color": { "r": 100, "g": 100, "b": 100, "x": 0.5, "y": 0.5 }
 }
+
+p = ArgumentParser(description="Look at the tv")
+p.add_argument(
+    "-v", "--verbose",
+    default=False, action="store_true",
+    help="enable verbose output (default: disabled)")
+args = p.parse_args()
+
+if args.verbose:
+    def verbose(msg):
+        print(msg)
+else:
+    def verbose(msg):
+        pass
 
 send_discovery_config(config)
 start_subscription_loop(state, config)
