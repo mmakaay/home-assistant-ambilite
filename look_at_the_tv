@@ -189,6 +189,7 @@ def handle_ambilite(cam, config):
 
     set_color_in_state(dominant_color, config, state)
     send_attributes(state, config)
+    send_state(state, config)
 
 def get_dominant_color(img):
     SAMPLE_STEP = 15

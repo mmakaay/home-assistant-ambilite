@@ -8,6 +8,9 @@ install:
 status:
 	systemctl status look_at_the_tv
 
+log:
+	journalctl -u look_at_the_tv -f
+
 run:
 	systemctl stop look_at_the_tv
 	./look_at_the_tv -v
