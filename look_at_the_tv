@@ -36,7 +36,7 @@ def send_discovery_config(config):
     }), config)
 
 def send_attributes(state, config):
-    send_payload("attributes", json.dumps(state["color"]), config)
+    send_payload("attributes", json.dumps(state["attributes"]), config)
 
 def send_state(state, config):
     send_payload("state", "ON" if state["enabled"] else "OFF", config)
@@ -99,11 +99,14 @@ def on_message(client, userdata, message):
             print("Subscriber: Ambilite turned on")
         else:
             client.state["enabled"] = False
-            os.unlink(client.config["state_file"])
+            try:
+                os.unlink(client.config["state_file"])
+            except OSError:
+                pass # most likely, the file does not exist
             print("Subscriber: Ambilite turned off")
         send_state(client.state, client.config)
     except Exception as e:
-        print("Subscriber: Failed to set ambilite state: %s" % str(e)) 
+        print("Subscriber: Failed to set ambilite state: %s: %s" % (type(e).__name__, str(e)))
 
 
 # ----------------------------------------------------------------------
@@ -117,18 +120,17 @@ import picamera.array
 import rgbxy
 
 def start_publish_loop(state, config):
-    config["color_converter"] = rgbxy.Converter(rgbxy.GamutB)
     with picamera.PiCamera() as cam:
         while True:
-            if not state["enabled"]:
+            if state["enabled"]:
+                try:
+                    handle_ambilite(cam, config)
+                    #handle_itv_led(cam)
+                except Exception as e:
+                    verbose("Publish: Unhandled exception: %s" % str(e))
+            else:
                 verbose("Publish: No action, ambilite is disabled")
-                time.sleep(1)
-                continue
-            try:
-                handle_ambilite(cam, config)
-                #handle_itv_led(cam)
-            except Exception as e:
-                verbose("Publish: Unhandled exception: %s" % str(e))
+            time.sleep(1)
 
 
 def handle_itv_led(state, config):
@@ -266,14 +268,13 @@ def get_dominant_color(img):
     return average_rgb
 
 def set_color_in_state(color, config, state):
-    xy = config["color_converter"].rgb_to_xy(*color)
-    state["color"] = {
-        "r": color[0],
-        "g": color[1],
-        "b": color[2],
-        "x": xy[0],
-        "y": xy[1]
-     }
+    state["attributes"]["r"] = color[0]
+    state["attributes"]["g"] = color[1]
+    state["attributes"]["b"] = color[2]
+    for name, converter in config["color_converters"].items():
+        xy = converter.rgb_to_xy(*color)
+        state["attributes"]["%s_x" % name] = xy[0]
+        state["attributes"]["%s_y" % name] = xy[1]
 
 
 # ----------------------------------------------------------------------
@@ -293,11 +294,16 @@ config = {
     "base_topic": "homeassistant/switch/ambilite",
     "unique_id": "ambilite-mediacontroller",
     "name": "ambilite",
+    "color_converters": {
+        "gamutA": rgbxy.Converter(rgbxy.GamutA),
+        "gamutB": rgbxy.Converter(rgbxy.GamutB),
+        "gamutC": rgbxy.Converter(rgbxy.GamutC)
+    }
 }
 
 state = {
     "enabled": os.path.exists(config["state_file"]),
-    "color": { "r": 100, "g": 100, "b": 100, "x": 0.5, "y": 0.5 }
+    "attributes": {}
 }
 
 p = ArgumentParser(description="Look at the tv")
@@ -314,6 +320,7 @@ else:
     def verbose(msg):
         pass
 
+set_color_in_state((100, 100, 100), config, state)
 start_subscription_loop(state, config)
 start_publish_loop(state, config)
 
