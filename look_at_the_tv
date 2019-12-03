@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import io
 import json
 import os.path
 import sys
@@ -40,9 +41,18 @@ def send_attributes(state, config):
 
 def send_state(state, config):
     send_payload("state", "ON" if state["enabled"] else "OFF", config)
+
+def send_tv_image(img, config):
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    send_payload("tv_image", buf.getvalue(), config, False)
  
-def send_payload(topic, payload, config):
-    verbose("Publish: %s: %s" % (topic, payload))
+def send_payload(topic, payload, config, log_payload=True):
+    if log_payload:
+        verbose("Publish: %s: %s" % (topic, payload))
+    else:
+        verbose("Publish: %s" % topic)
+
     publish.single(
         "%s/%s" % (config["base_topic"], topic), payload,
         hostname=config["broker"],
@@ -99,18 +109,22 @@ def on_message(client, userdata, message):
             print("Subscriber: Ambilite turned on")
         else:
             client.state["enabled"] = False
-            try:
+            if os.path.exists(client.config["state_file"]):
                 os.unlink(client.config["state_file"])
-            except OSError:
-                pass # most likely, the file does not exist
             print("Subscriber: Ambilite turned off")
+
+            off_img = Image.new('RGB', (492, 320), 'grey')
+            font = ImageFont.truetype("/usr/share/fonts/truetype/ttf-bitstream-vera/Vera.ttf", 20)
+            ImageDraw.Draw(off_img).text((145, 120), '-- uitgeschakeld --', fill='white', font=font)
+            send_tv_image(off_img, config)
+
         send_state(client.state, client.config)
     except Exception as e:
         print("Subscriber: Failed to set ambilite state: %s: %s" % (type(e).__name__, str(e)))
 
 
 # ----------------------------------------------------------------------
-# MQTT subscription
+# MQTT publishing
 # ----------------------------------------------------------------------
 
 import numpy as np
@@ -118,6 +132,8 @@ import numexpr as ne
 import picamera
 import picamera.array
 import rgbxy
+from PIL import Image, ImageDraw, ImageFont
+
 
 def start_publish_loop(state, config):
     with picamera.PiCamera() as cam:
@@ -130,7 +146,7 @@ def start_publish_loop(state, config):
                     verbose("Publish: Unhandled exception: %s" % str(e))
             else:
                 verbose("Publish: No action, ambilite is disabled")
-            time.sleep(1)
+                time.sleep(1)
 
 
 def handle_itv_led(state, config):
@@ -192,6 +208,7 @@ def handle_ambilite(cam, config):
     set_color_in_state(dominant_color, config, state)
     send_attributes(state, config)
     send_state(state, config)
+    send_tv_image(Image.fromarray(img), config)
 
 def get_dominant_color(img):
     SAMPLE_STEP = 15
