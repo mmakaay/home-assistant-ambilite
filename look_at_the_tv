@@ -42,11 +42,6 @@ def send_attributes(state, config):
 def send_state(state, config):
     send_payload("state", "ON" if state["enabled"] else "OFF", config)
 
-def send_tv_image(img, config):
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG")
-    send_payload("tv_image", buf.getvalue(), config, False)
- 
 def send_payload(topic, payload, config, log_payload=True):
     if log_payload:
         verbose("Publish: %s: %s" % (topic, payload))
@@ -113,11 +108,6 @@ def on_message(client, userdata, message):
                 os.unlink(client.config["state_file"])
             print("Subscriber: Ambilite turned off")
 
-            off_img = Image.new('RGB', (492, 320), 'grey')
-            font = ImageFont.truetype("/usr/share/fonts/truetype/ttf-bitstream-vera/Vera.ttf", 20)
-            ImageDraw.Draw(off_img).text((145, 120), '-- uitgeschakeld --', fill='white', font=font)
-            send_tv_image(off_img, config)
-
         send_state(client.state, client.config)
     except Exception as e:
         print("Subscriber: Failed to set ambilite state: %s: %s" % (type(e).__name__, str(e)))
@@ -131,7 +121,6 @@ import numpy as np
 import numexpr as ne
 import picamera
 import picamera.array
-import rgbxy
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -208,7 +197,6 @@ def handle_ambilite(cam, config):
     set_color_in_state(dominant_color, config, state)
     send_attributes(state, config)
     send_state(state, config)
-    send_tv_image(Image.fromarray(img), config)
 
 def get_dominant_color(img):
     SAMPLE_STEP = 15
@@ -288,11 +276,6 @@ def set_color_in_state(color, config, state):
     state["attributes"]["r"] = color[0]
     state["attributes"]["g"] = color[1]
     state["attributes"]["b"] = color[2]
-    for name, converter in config["color_converters"].items():
-        xy = converter.rgb_to_xy(*color)
-        state["attributes"]["%s_x" % name] = xy[0]
-        state["attributes"]["%s_y" % name] = xy[1]
-
 
 # ----------------------------------------------------------------------
 # Main
@@ -311,11 +294,6 @@ config = {
     "base_topic": "homeassistant/switch/ambilite",
     "unique_id": "ambilite-mediacontroller",
     "name": "ambilite",
-    "color_converters": {
-        "gamutA": rgbxy.Converter(rgbxy.GamutA),
-        "gamutB": rgbxy.Converter(rgbxy.GamutB),
-        "gamutC": rgbxy.Converter(rgbxy.GamutC)
-    }
 }
 
 state = {
