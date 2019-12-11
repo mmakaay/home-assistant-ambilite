@@ -11,19 +11,23 @@ from argparse import ArgumentParser
 
 
 # ----------------------------------------------------------------------
-# MQTT publishing
+# MQTT home-assistant auto-discovery
 # ----------------------------------------------------------------------
 
-def send_discovery_config(config):
-    """Unregister and reregister with Home Assistant, to get a fresh
-       autodiscovery configuration in there."""
-    send_payload("config", "", config)
-    send_payload("config", json.dumps({
+def send_discovery_configs(config):
+    send_ambilite_discovery(config)
+    send_settopbox_discovery(config)
+    send_playstation4_discovery(config)
+
+def send_ambilite_discovery(config):
+    topic = "%s/config" % config["ambilite_base_topic"]
+    #send_payload(topic, "", config)
+    send_payload(topic, json.dumps({
         "unique_id": config["unique_id"],
         "name": config["name"],
-        "state_topic": "%s/state" % config["base_topic"],
-        "command_topic": "%s/set" % config["base_topic"],
-        "json_attributes_topic": "%s/attributes" % config["base_topic"],
+        "state_topic": "%s/state" % config["ambilite_base_topic"],
+        "command_topic": "%s/set" % config["ambilite_base_topic"],
+        "json_attributes_topic": "%s/attributes" % config["ambilite_base_topic"],
         "optimistic": "false",
         "retain": "true",
         "icon": "mdi:shape-rectangle-plus",
@@ -36,20 +40,60 @@ def send_discovery_config(config):
         }
     }), config)
 
+def send_settopbox_discovery(config):
+    topic = "%s/config" % config["stb_base_topic"]
+    #send_payload(topic, "", config)
+    send_payload(topic, json.dumps({
+        "unique_id": config["unique_id"] + "-stb",
+        "name": "settopbox",
+        "state_topic": "%s/state" % config["stb_base_topic"],
+        "command_topic": "%s/set" % config["stb_base_topic"],
+        "json_attributes_topic": "%s/attributes" % config["stb_base_topic"],
+        "optimistic": "false",
+        "retain": "true",
+        "icon": "mdi:set-top-box",
+        "device": {
+            "identifiers": [config["unique_id"] + "-stb"],
+            "manufacturer": "Maurice Makaay",
+            "model": "Raspberry",
+            "sw_version": config["version"],
+            "name": "Settopbox watcher"
+        }
+    }), config)
+
+def send_playstation4_discovery(config):
+    topic = "%s/config" % config["ps4_base_topic"]
+    #send_payload(topic, "", config)
+    send_payload(topic, json.dumps({
+        "unique_id": config["unique_id"] + "-ps4",
+        "name": "playstation4",
+        "state_topic": "%s/state" % config["ps4_base_topic"],
+        "command_topic": "%s/set" % config["ps4_base_topic"],
+        "optimistic": "false",
+        "retain": "true",
+        "icon": "mdi:playstation",
+        "device": {
+            "identifiers": [config["unique_id"] + "-ps4"],
+            "manufacturer": "Maurice Makaay",
+            "model": "Raspberry",
+            "sw_version": config["version"],
+            "name": "Playstation watcher"
+        }
+    }), config)
+
 def send_attributes(state, config):
-    send_payload("attributes", json.dumps(state["attributes"]), config)
+    topic = "%s/attributes" % config["ambilite_base_topic"],
+    send_payload(topic, json.dumps(state["attributes"]), config)
 
 def send_state(state, config):
-    send_payload("state", "ON" if state["enabled"] else "OFF", config)
+    topic = "%s/state" % config["ambilite_base_topic"],
+    send_payload(topic, "ON" if state["enabled"] else "OFF", config)
 
-def send_payload(topic, payload, config, log_payload=True):
-    if log_payload:
-        verbose("Publish: %s: %s" % (topic, payload))
-    else:
-        verbose("Publish: %s" % topic)
+def send_payload(topic, payload, config):
+    verbose("Publish: %s: %s" % (topic, payload))
 
     publish.single(
-        "%s/%s" % (config["base_topic"], topic), payload,
+        topic, payload,
         hostname=config["broker"],
         auth = {
             "username": config["username"],
@@ -75,13 +119,14 @@ def start_subscription_loop(state, config):
     client.on_disconnect = on_disconnect
     client.on_message = on_message
     client.connect(config["broker"])
-    client.subscribe("%s/set" % config["base_topic"], qos=0)
+    client.subscribe("%s/set" % config["ambilite_base_topic"], qos=0)
+    client.subscribe("%s/snapshot" % config["ambilite_base_topic"], qos=0)
     client.loop_start()
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print("Subscriber: Connected to broker")
-        send_discovery_config(client.config)
+        send_discovery_configs(client.config)
         send_state(client.state, client.config)
     else:
         print("Subscriber: Connecting to broker failed (rc = %d)" % rc)
@@ -94,21 +139,24 @@ def on_disconnect(client, userdata, rc):
 
 def on_message(client, userdata, message):
     verbose("Subscriber: Incoming message: %s" % message.topic)
-    on_or_off = str(message.payload.decode("utf-8"))
     try:
-        if on_or_off == 'ON':
-            client.state["enabled"] = True
-            fh = open(client.config["state_file"], "w")
-            fh.write("Ambilite turned on at %f" % time.time())
-            fh.close()
-            print("Subscriber: Ambilite turned on")
-        else:
-            client.state["enabled"] = False
-            if os.path.exists(client.config["state_file"]):
-                os.unlink(client.config["state_file"])
-            print("Subscriber: Ambilite turned off")
-
-        send_state(client.state, client.config)
+        if message.topic.endswith("/snapshot"):
+            client.state["store_snapshots"] = True
+            print("Subscriber: Scheduled storing of snapshot")
+        elif message.topic.endswith("/set"):
+            on_or_off = str(message.payload.decode("utf-8"))
+            if on_or_off == 'ON':
+                client.state["enabled"] = True
+                fh = open(client.config["state_file"], "w")
+                fh.write("Ambilite turned on at %f" % time.time())
+                fh.close()
+                print("Subscriber: Ambilite turned on")
+            else:
+                client.state["enabled"] = False
+                if os.path.exists(client.config["state_file"]):
+                    os.unlink(client.config["state_file"])
+                print("Subscriber: Ambilite turned off")
+            send_state(client.state, client.config)
     except Exception as e:
         print("Subscriber: Failed to set ambilite state: %s: %s" % (type(e).__name__, str(e)))
 
@@ -127,19 +175,26 @@ from PIL import Image, ImageDraw, ImageFont
 def start_publish_loop(state, config):
     with picamera.PiCamera() as cam:
         while True:
-            if state["enabled"]:
-                try:
-                    handle_ambilite(cam, config)
-                    #handle_itv_led(cam)
-                except Exception as e:
-                    verbose("Publish: Unhandled exception: %s" % str(e))
-            else:
-                verbose("Publish: No action, ambilite is disabled")
-                time.sleep(1)
+            try:
+                make_snapshot = state["store_snapshots"]
+                state["store_snapshots"] = False
+                if state["enabled"]:
+                    handle_ambilite(cam, config, make_snapshot)
+                handle_settopbox(cam, config, make_snapshot)
+            except Exception as e:
+                verbose("Publish: Unhandled exception: %s: %s" % (type(e).__name__, str(e)))
+                time.sleep(1) # prevent tight error loops
 
 
-def handle_itv_led(state, config):
-    cam.zoom = (0.50, 0.58, 0.10, 0.10)
+def store_snapshot(config, img, name):
+    swap = "%s/snapshot_%s.swap.jpg" % (config["snapshot_path"], name)
+    final = "%s/snapshot_%s.jpg" % (config["snapshot_path"], name)
+    Image.fromarray(img).save(swap)
+    os.rename(swap, final)
+    print("Publish: stored %s snapshot: %s" % (name, final))
+
+def handle_settopbox(cam, config, make_snapshot):
+    cam.zoom = (0.50, 0.59, 0.10, 0.10)
     cam.resolution = (736, 480)
     cam.awb_mode = 'fluorescent'
     cam.meter_mode = 'average'
@@ -147,12 +202,67 @@ def handle_itv_led(state, config):
     cam.contrast = 100
 
     with picamera.array.PiRGBArray(cam) as store:
-        cam.capture(store, format="bgr")
+        cam.capture(store, format="rgb")
         img = store.array
-        #cv2.imwrite('/var/www/html/still_itv_ps4.swap.jpg', img)
-        #os.rename('/var/www/html/still_itv_ps4.swap.jpg', '/var/www/html/still_itv_ps4.jpg')
+        stb, ps4 = get_device_status(img)
+        print("Device status: settopbox=%s, playstation4=%s" % (stb, ps4))
 
-def handle_ambilite(cam, config):
+        # Publish screen snapshot to file.
+        if make_snapshot:
+            store_snapshot(config, img, "settopbox")
+         
+        # Publish state via MQTT.
+        send_payload("%s/state" % config["stb_base_topic"], stb, config)
+        send_payload("%s/state" % config["ps4_base_topic"], ps4, config)
+
+SETTOPBOX_LED = {
+    'R': 'OFF',
+    'G': 'ON'
+}
+
+PLAYSTATION4_LED = {
+    'R': 'OFF',
+    'RGB': 'ON'
+}
+
+def get_device_status(img):
+    CUTOFF = 100
+
+    states = []
+    state = '-'
+    for line in img:
+        if np.all(line <= CUTOFF):
+            new_state = '-';
+        else:
+            rMax = np.max(line[::, 0])
+            gMax = np.max(line[::, 1])
+            bMax = np.max(line[::, 2])
+            new_state = (
+               ('R' if rMax > CUTOFF else '') +
+               ('G' if gMax > CUTOFF else '') +
+               ('B' if bMax > CUTOFF else '')
+            )
+        if new_state != state:
+            if new_state == '-':
+                states.append(new_state)
+                state = new_state
+            elif state == '-':
+                states.append(new_state)
+                state = new_state
+            elif len(new_state) > len(state):
+                states[-1] = new_state
+                state = new_state
+
+    states = [s for s in states if s != '-']
+
+    if len(states) != 2:
+        return ('UNKNOWN', 'UNKNOWN')
+    stb, ps4 = states
+    if stb in SETTOPBOX_LED and ps4 in PLAYSTATION4_LED:
+        return (SETTOPBOX_LED[stb], PLAYSTATION4_LED[ps4])
+    return ('UNKNOWN', 'UNKNOWN')
+
+def handle_ambilite(cam, config, make_snapshot):
     """Take a shot of the tv screen, compute the dominant color and
        pushlish the color to Home Assistant."""
     cam.zoom = (0.48, 0.20, 0.305, 0.255)
@@ -163,47 +273,26 @@ def handle_ambilite(cam, config):
     cam.contrast = 0
 
     with picamera.array.PiRGBArray(cam) as store:
-        cam.capture(store, format="bgr")  
+        cam.capture(store, format="rgb")  
         img = store.array
+        #img = img[:, :, ::-1]
 
-        #cv2.imwrite('/var/www/html/still_tv.swap.jpg', img)
-        #os.rename('/var/www/html/still_tv.swap.jpg', '/var/www/html/still_tv.jpg')
-        img = img[:, :, ::-1]
+        # Publish screen snapshot to file.
+        if make_snapshot:
+            store_snapshot(config, img, "television")
+
         dominant_color = get_dominant_color(img)
-
-    #file = open('/var/www/html/index.html', 'w')
-    #color_style = "rgb(%d,%d,%d)" % dominant_color
-    #file.write("<!DOCTYPE HTML>\n")
-    #file.write("<body style=\"background-color: %s\">" % color_style)
-    #file.write("<img style=\"float:left\" src=\"still_tv.jpg\">\n")
-    #file.write("<img style=\"float:left\" src=\"still_itv_ps4.jpg\">\n")
-    #file.write("</body>")
-    #file.close()
-
-    #colors = {
-    #    "left": dominant_color,
-    #    "right": dominant_color,
-    #    "top": dominant_color,
-    #}
-
-    #file = open('/var/www/html/still_tv_colors.swap.json', 'w')
-    #file.write(json.dumps(colors))
-    #file.close()
-    #os.rename(
-    #    '/var/www/html/still_tv_colors.swap.json',
-    #    '/var/www/html/still_tv_colors.json')
-    #print(repr(colors))
 
     set_color_in_state(dominant_color, config, state)
     send_attributes(state, config)
     send_state(state, config)
 
 def get_dominant_color(img):
-    SAMPLE_STEP = 15
+    SAMPLE_STEP = 20
     POSTERIZE = 25
     LOW = 50
     HIGH = 220
-    TOP_SCREEN_CUTOFF = 0.7
+    TOP_SCREEN_CUTOFF = 0.8
 
     # To save time in the following steps, take a sample of the
     # total amount of items. For our case (determining the dominant
@@ -291,13 +380,17 @@ config = {
     "username": "hass",
     "password": "burgers",
     "state_file": "/var/run/ambilite.active",
-    "base_topic": "homeassistant/switch/ambilite",
+    "snapshot_path": "/var/www/html",
+    "ambilite_base_topic": "homeassistant/switch/ambilite",
+    "stb_base_topic": "homeassistant/switch/settopbox",
+    "ps4_base_topic": "homeassistant/switch/playstation4",
     "unique_id": "ambilite-mediacontroller",
     "name": "ambilite",
 }
 
 state = {
     "enabled": os.path.exists(config["state_file"]),
+    "store_snapshots": True,
     "attributes": {}
 }
 
