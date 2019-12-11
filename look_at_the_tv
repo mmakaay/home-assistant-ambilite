@@ -82,11 +82,11 @@ def send_playstation4_discovery(config):
     }), config)
 
 def send_attributes(state, config):
-    topic = "%s/attributes" % config["ambilite_base_topic"],
+    topic = "%s/attributes" % config["ambilite_base_topic"]
     send_payload(topic, json.dumps(state["attributes"]), config)
 
 def send_state(state, config):
-    topic = "%s/state" % config["ambilite_base_topic"],
+    topic = "%s/state" % config["ambilite_base_topic"]
     send_payload(topic, "ON" if state["enabled"] else "OFF", config)
 
 def send_payload(topic, payload, config):
@@ -116,12 +116,17 @@ def start_subscription_loop(state, config):
         username=config["username"],
         password=config["password"])
     client.on_connect = on_connect
+    client.on_subscribe = on_subscribe
     client.on_disconnect = on_disconnect
     client.on_message = on_message
     client.connect(config["broker"])
     client.subscribe("%s/set" % config["ambilite_base_topic"], qos=0)
     client.subscribe("%s/snapshot" % config["ambilite_base_topic"], qos=0)
+    client.subscribe("homeassistant/status", qos=0)
     client.loop_start()
+
+def on_subscribe(client, userdata, mid, granted_qos):
+    print("Subscriber: started listener on mid %s" % mid)
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -140,7 +145,11 @@ def on_disconnect(client, userdata, rc):
 def on_message(client, userdata, message):
     verbose("Subscriber: Incoming message: %s" % message.topic)
     try:
-        if message.topic.endswith("/snapshot"):
+        if message.topic == "homeassistant/status":
+            if str(message.payload.decode("utf-8")) == "online":
+                send_discovery_configs(client.config)
+                send_state(client.state, client.config)
+        elif message.topic.endswith("/snapshot"):
             client.state["store_snapshots"] = True
             print("Subscriber: Scheduled storing of snapshot")
         elif message.topic.endswith("/set"):
@@ -180,7 +189,9 @@ def start_publish_loop(state, config):
                 state["store_snapshots"] = False
                 if state["enabled"]:
                     handle_ambilite(cam, config, make_snapshot)
-                handle_settopbox(cam, config, make_snapshot)
+                    state["counter"] += 1
+                if not state["enabled"] or state["counter"] > 10:
+                    handle_settopbox(cam, state, config, make_snapshot)
             except Exception as e:
                 verbose("Publish: Unhandled exception: %s: %s" % (type(e).__name__, str(e)))
                 time.sleep(1) # prevent tight error loops
@@ -193,7 +204,7 @@ def store_snapshot(config, img, name):
     os.rename(swap, final)
     print("Publish: stored %s snapshot: %s" % (name, final))
 
-def handle_settopbox(cam, config, make_snapshot):
+def handle_settopbox(cam, state, config, make_snapshot):
     cam.zoom = (0.50, 0.59, 0.10, 0.10)
     cam.resolution = (736, 480)
     cam.awb_mode = 'fluorescent'
@@ -205,13 +216,24 @@ def handle_settopbox(cam, config, make_snapshot):
         cam.capture(store, format="rgb")
         img = store.array
         stb, ps4 = get_device_status(img)
-        print("Device status: settopbox=%s, playstation4=%s" % (stb, ps4))
 
         # Publish screen snapshot to file.
         if make_snapshot:
             store_snapshot(config, img, "settopbox")
+
+        # Use last known state when new state is UNKNOWN.
+        if stb == "UNKNOWN":
+            stb = state["stb"]
+        if ps4 == "UNKNOWN":
+            ps4 = state["ps4"]
+
+        # If nothing changed, then don't push an update via MQTT.
+        if stb == state["stb"] and ps4 == state["ps4"]:
+            return
          
         # Publish state via MQTT.
+        state["stb"] = stb
+        state["ps4"] = ps4
         send_payload("%s/state" % config["stb_base_topic"], stb, config)
         send_payload("%s/state" % config["ps4_base_topic"], ps4, config)
 
@@ -391,7 +413,10 @@ config = {
 state = {
     "enabled": os.path.exists(config["state_file"]),
     "store_snapshots": True,
-    "attributes": {}
+    "attributes": {},
+    "counter": 0,
+    "stb": "UNKNOWN",
+    "ps4": "UNKNOWN"
 }
 
 p = ArgumentParser(description="Look at the tv")
