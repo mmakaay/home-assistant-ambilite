@@ -81,13 +81,19 @@ def send_playstation4_discovery(config):
         }
     }), config)
 
-def send_attributes(state, config):
+def send_ambilite_attributes(state, config):
     topic = "%s/attributes" % config["ambilite_base_topic"]
     send_payload(topic, json.dumps(state["attributes"]), config)
 
-def send_state(state, config):
+def send_ambilite_state(state, config):
     topic = "%s/state" % config["ambilite_base_topic"]
     send_payload(topic, "ON" if state["enabled"] else "OFF", config)
+
+def send_settopbox_state(state, config):
+        send_payload("%s/state" % config["stb_base_topic"], state["stb"], config)
+
+def send_playstation4_state(state, config):
+        send_payload("%s/state" % config["ps4_base_topic"], state["ps4"], config)
 
 def send_payload(topic, payload, config):
     verbose("Publish: %s: %s" % (topic, payload))
@@ -132,7 +138,7 @@ def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print("Subscriber: Connected to broker")
         send_discovery_configs(client.config)
-        send_state(client.state, client.config)
+        send_ambilite_state(client.state, client.config)
     else:
         print("Subscriber: Connecting to broker failed (rc = %d)" % rc)
 
@@ -145,13 +151,20 @@ def on_disconnect(client, userdata, rc):
 def on_message(client, userdata, message):
     verbose("Subscriber: Incoming message: %s" % message.topic)
     try:
+        # Home Assistant was restarted.
         if message.topic == "homeassistant/status":
             if str(message.payload.decode("utf-8")) == "online":
                 send_discovery_configs(client.config)
-                send_state(client.state, client.config)
+                send_ambilite_state(client.state, client.config)
+                send_settopbox_state(client.state, client.config)
+                send_playstation4_state(client.state, client.config)
+
+        # A request to store camera snapshots in the web root.
         elif message.topic.endswith("/snapshot"):
             client.state["store_snapshots"] = True
             print("Subscriber: Scheduled storing of snapshot")
+
+        # Turn the amblite feature ON / OFF.
         elif message.topic.endswith("/set"):
             on_or_off = str(message.payload.decode("utf-8"))
             if on_or_off == 'ON':
@@ -165,13 +178,13 @@ def on_message(client, userdata, message):
                 if os.path.exists(client.config["state_file"]):
                     os.unlink(client.config["state_file"])
                 print("Subscriber: Ambilite turned off")
-            send_state(client.state, client.config)
+            send_ambilite_state(client.state, client.config)
     except Exception as e:
         print("Subscriber: Failed to set ambilite state: %s: %s" % (type(e).__name__, str(e)))
 
 
 # ----------------------------------------------------------------------
-# MQTT publishing
+# MQTT publishing loop
 # ----------------------------------------------------------------------
 
 import numpy as np
@@ -192,6 +205,7 @@ def start_publish_loop(state, config):
                     state["counter"] += 1
                 if not state["enabled"] or state["counter"] > 10:
                     handle_settopbox(cam, state, config, make_snapshot)
+                #handle_full_snapshot(cam, state, config, make_snapshot)
             except Exception as e:
                 verbose("Publish: Unhandled exception: %s: %s" % (type(e).__name__, str(e)))
                 time.sleep(1) # prevent tight error loops
@@ -204,10 +218,37 @@ def store_snapshot(config, img, name):
     os.rename(swap, final)
     print("Publish: stored %s snapshot: %s" % (name, final))
 
-def handle_settopbox(cam, state, config, make_snapshot):
-    cam.zoom = (0.50, 0.59, 0.10, 0.10)
-    cam.resolution = (736, 480)
+
+# ----------------------------------------------------------------------
+# Create full snapshot
+# ----------------------------------------------------------------------
+
+def handle_full_snapshot(cam, state, config, make_snapshot):
+    if not make_snapshot:
+        return
+
+    cam.zoom = (0, 0, 1, 1)
+    cam.resolution = (1920, 1080)
     cam.awb_mode = 'fluorescent'
+    cam.meter_mode = 'average'
+    cam.saturation = 50
+    cam.contrast = 50
+
+    with picamera.array.PiRGBArray(cam) as store:
+        cam.capture(store, format="rgb")
+        img = store.array
+        store_snapshot(config, img, "full")
+
+
+# ----------------------------------------------------------------------
+# Check device states, based on camera input
+# ----------------------------------------------------------------------
+
+def handle_settopbox(cam, state, config, make_snapshot):
+    cam.zoom = (0.505, 0.635, 0.020, 0.032)
+    cam.resolution = (736, 480)
+    #cam.awb_mode = 'fluorescent'
+    cam.awb_mode = 'auto'
     cam.meter_mode = 'average'
     cam.saturation = 100
     cam.contrast = 100
@@ -234,8 +275,8 @@ def handle_settopbox(cam, state, config, make_snapshot):
         # Publish state via MQTT.
         state["stb"] = stb
         state["ps4"] = ps4
-        send_payload("%s/state" % config["stb_base_topic"], stb, config)
-        send_payload("%s/state" % config["ps4_base_topic"], ps4, config)
+        send_settopbox_state(state, config)
+        send_playstation4_state(state, config)
 
 SETTOPBOX_LED = {
     'R': 'OFF',
@@ -248,7 +289,7 @@ PLAYSTATION4_LED = {
 }
 
 def get_device_status(img):
-    CUTOFF = 100
+    CUTOFF = 80
 
     states = []
     state = '-'
@@ -284,6 +325,11 @@ def get_device_status(img):
         return (SETTOPBOX_LED[stb], PLAYSTATION4_LED[ps4])
     return ('UNKNOWN', 'UNKNOWN')
 
+
+# ----------------------------------------------------------------------
+# Produce ambilite RGB value, based on camera input
+# ----------------------------------------------------------------------
+
 def handle_ambilite(cam, config, make_snapshot):
     """Take a shot of the tv screen, compute the dominant color and
        pushlish the color to Home Assistant."""
@@ -306,8 +352,8 @@ def handle_ambilite(cam, config, make_snapshot):
         dominant_color = get_dominant_color(img)
 
     set_color_in_state(dominant_color, config, state)
-    send_attributes(state, config)
-    send_state(state, config)
+    send_ambilite_attributes(state, config)
+    send_ambilite_state(state, config)
 
 def get_dominant_color(img):
     SAMPLE_STEP = 20
@@ -415,8 +461,8 @@ state = {
     "store_snapshots": True,
     "attributes": {},
     "counter": 0,
-    "stb": "UNKNOWN",
-    "ps4": "UNKNOWN"
+    "stb": "INITIALIZING",
+    "ps4": "INITIALIZING"
 }
 
 p = ArgumentParser(description="Look at the tv")
